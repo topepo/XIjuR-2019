@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+  <head>
+    <title>Modeling in the Tidyverse</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Max Kuhn (RStudio)" />
+    <link rel="stylesheet" href="mtheme_max.css" type="text/css" />
+    <link rel="stylesheet" href="fonts_mtheme_max.css" type="text/css" />
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# Modeling in the Tidyverse
+### Max Kuhn (RStudio)
+
+---
+
+
+
+
+
+
+# What led Here/My path
+
+Received my Biostatistics Ph.D in 1998 and worked in industry for ~18 years (medical diagnostics and pharmaceuticals/drug discovery). 
+
+Started real statistical programming with S+ in 1993 and transitioned to R in 2002 (version 1.4.1!). 
+
+Mostly focused on experimental design, modeling, and _estimation problems_. 
+
+Began writing `caret` in 2004-2005. 
+
+Lots and lots of teaching and workshops. 
+
+Joined RStudio in 2016. 
+
+&lt;img src="images/recipes.png" class="inline-hex"&gt;&lt;img src="images/rsample.png" class="inline-hex"&gt;&lt;img src="images/yardstick.png" class="inline-hex"&gt;&lt;img src="images/tidyposterior.png" class="inline-hex"&gt;&lt;img src="images/dials.png" class="inline-hex"&gt;&lt;img src="images/tidymodels_hex.png" class="inline-hex"&gt;&lt;img src="images/parsnip.png" class="inline-hex"&gt; and more
+
+
+---
+
+# Who I've been writing software for
+
+Ordinary people who do data analysis: scientists, statisticians, managers, business analysts, data scientists, etc. (in order of appearance). 
+
+There are a large number of people without backgrounds in statistics or programming who have to do data analysis
+
+  * See decades of discussion on the [_democratization of statistics_](https://scholar.google.com/scholar?hl=en&amp;as_sdt=0%2C7&amp;as_vis=1&amp;q="Democratization+of+statistics"&amp;btnG=)
+
+If they have a computer science background, that's great. 
+
+If they have a statistics background, that's even better. 
+
+
+---
+
+# Modeling in R
+
+
+.pull-left[
+.font90[
+* R has always had a rich set of modeling tools that it inherited from S. For example, the formula interface has made it simple to specify potentially complex model structures.   
+
+* _R has cutting edge models_. Many researchers in various domains use R as their primary computing environment and their work often results in R packages.
+
+* _It is easy to port or link to other applications_. R doesn't try to be everything to everyone. If you prefer models implemented in C, C++, `tensorflow`, `keras`, `python`, `stan`, or `Weka`, you can access these applications without leaving R. 
+]
+]
+
+.pull-right[
+However, there is a huge _consistency problem_. For example: 
+* There are two primary methods for specifying what terms are in a model. Not all models have both. 
+* 99% of model functions automatically generate dummy variables when using formulas. 
+* Sparse matrices can be used (unless the can't).
+* Many package developers don't know much about the language and omit OOP and other core R components.
+
+]
+
+
+---
+
+# Exhibit A: Between-package inconsistency
+
+Syntax for computing predicted class probabilities:
+
+|Function      |Package      |Code                                       |
+|:-------------|:------------|:------------------------------------------|
+|`lda`         |`MASS`       |`predict(obj)`                             |
+|`glm`         |`stats`      |`predict(obj, type = "response")`          |
+|`gbm`         |`gbm`        |`predict(obj, type = "response", n.trees)` |
+|`mda`         |`mda`        |`predict(obj, type = "posterior")`         |
+|`rpart`       |`rpart`      |`predict(obj, type = "prob")`              |
+|`Weka`        |`RWeka`      |`predict(obj, type = "probability")`       |
+|`logitboost`  |`LogitBoost` |`predict(obj, type = "raw", nIter)`        |
+|`pamr.train`  |`pamr`       |`pamr.predict(obj, type = "posterior")`    |
+
+
+---
+
+# Principle of the tidyverse
+
+&gt; The tidyverse is an opinionated collection of R packages designed for data science. All packages share an underlying design philosophy, grammar, and data structures.
+
+Enumerated at [`https://tidyverse.tidyverse.org/articles/manifesto.html`](https://tidyverse.tidyverse.org/articles/manifesto.html) and [`https://principles.tidyverse.org`](https://principles.tidyverse.org)
+
+
+ * Reuse existing data structures.
+
+ * Compose simple functions with the pipe.
+
+ * Embrace functional programming.
+
+ * ***Design for humans.***
+
+
+---
+
+# Design for humans
+
+&gt; "Design your API primarily so that it is easy to use by humans. Computer efficiency is a secondary concern because the bottleneck in most data analysis is thinking time, not computing time."
+
+My take: make it easy for people (= everyone) to understand and interact with your API's. 
+
+* Alternate take: I don't want to get mad when I use your package.  
+
+Some examples: 
+
+* Choose names to make googling and auto-complete easy (`glue_*()`).
+
+* Avoid minutiae for obvious things (`xgboost::xgb.train(num_class = 3)`).
+
+* Reasonable defaults.
+
+
+** Is `{package}` working for me or am I working for `{package}`? **
+
+---
+
+# Just make things easier
+
+.pull-left[
+
+Does it _spark joy_?
+
+A great example is Mile's McBain's [datapasta package](https://resources.rstudio.com/rstudio-conf-2019/our-colour-of-magic-the-open-sourcery-of-fantastic-r-packages)
+
+&gt; ".. violating people's assumptions about what they are able to do."
+
+]
+.pull-right[
+
+
+&lt;img src="images/tribble_paste.gif" style="display: block; margin: auto;" /&gt;
+]
+
+---
+
+# Some additional principles for modeling software
+
+ * Protect users from making objectively poor choices. Examples:
+ 
+   * _Information leakage_ of training set data into evaluation sets.
+   
+   * Analyzing integers as categories
+   
+   * Down-sampling the test set
+ 
+ * Be predictable, consistent, and unsurprising.
+ 
+ * Separate the user-interface from computational-interface.
+ 
+
+---
+
+# Be predictable, consistent, and unsurprising  
+  
+The user should expect:
+
+ * To easily find the function to do what they want (e.g. `str_*()`).
+ 
+ * Argument names to be the same for the same quantity (`ntree`, `num_trees`, `num.trees`, etc.) and not jargony (`lambda`, etc.). 
+ 
+ * To be able to predict what is returned.
+   
+   * Whenever possible, make that consistent with any R conventions. 
+   
+ 
+   
+---
+
+# Exhibit B: Returning the same number of rows
+
+.font120[
+
+
+```r
+iris$Sepal.Length[141] &lt;- NA
+tr &lt;- iris[1:140, ]
+te &lt;- iris[141:150, -5]
+
+lm_mod &lt;- mda::mda(Species ~ ., data = tr)
+length(predict(lm_mod, te))
+```
+
+```
+## [1] 9
+```
+
+```r
+nrow(te)
+```
+
+```
+## [1] 10
+```
+
+]
+   
+---
+
+# Exhibit C: {glmnet} predictions
+
+
+ 
+The `glmnet` model can be used to fit regularized generalized linear models with a mixture of L&lt;sub&gt;1&lt;/sub&gt; and L&lt;sub&gt;2&lt;/sub&gt; penalties. 
+
+We'll look at what happens when we get predictions for a regression model (i.e. numeric _Y_) as well as classification models where _Y_ has two or three categorical values. 
+
+The models shown below contain solutions for three regularization values ( `\(\lambda\)` ). 
+
+The predict method gives the results for all three at once (👍). 
+
+
+---
+
+# Numeric `glmnet` Predictions
+
+Predicting a numeric outcome for two new data points:
+
+
+
+```r
+new_x
+```
+
+```
+##                x1         x2         x3         x4
+## sample_1 1.649028 -0.4825745 -0.2939638 -0.8154531
+## sample_2 0.656363 -0.4200524  0.8797609  0.1090868
+```
+
+```r
+predict(reg_mod, newx = new_x)
+```
+
+```
+##                s0       s1       s2
+## sample_1 9.946614 9.953288 10.03289
+## sample_2 9.946614 9.949115 10.01238
+```
+
+A matrix result and we will assume that the `\(\lambda\)` values are in the same order as what we gave to the model fit function.
+
+
+---
+
+# `glmnet` Class Predictions
+
+Predicting an outcome with two classes:
+
+
+```r
+predict(two_class_mod, newx = new_x, type = "class")
+```
+
+```
+##          s0  s1  s2 
+## sample_1 "a" "b" "b"
+## sample_2 "a" "b" "b"
+```
+
+Not factors! That's different from what is required for the `y` argument. From `?glmnet`:
+
+&gt; For `family="binomial"` [`y`] should be either a factor with two levels, or a two-column matrix of counts or proportions
+
+
+I'm guessing that this is because they want to keep the result a matrix (to be consistent). 
+
+
+---
+
+# `glmnet` Class Probabilities (Two Classes)
+
+
+```r
+predict(two_class_mod, newx = new_x, type = "response")
+```
+
+```
+##           s0  s1        s2
+## sample_1 0.5 0.5 0.5059110
+## sample_2 0.5 0.5 0.5261249
+```
+
+Okay, we get a matrix of the probability for the _second_ level of the outcome factor. 
+
+To make this fit into most code, we can manually calculate the other probability. No biggie!
+
+
+---
+
+# `glmnet` Class Probabilities (Three Classes)
+
+.pull-left[
+
+
+```r
+predict(three_class_mod, newx = new_x, 
+        type = "response")
+```
+
+```
+## , , s0
+## 
+##                  a         b         c
+## sample_1 0.3333333 0.3333333 0.3333333
+## sample_2 0.3333333 0.3333333 0.3333333
+## 
+## , , s1
+## 
+##                  a         b         c
+## sample_1 0.3333333 0.3333333 0.3333333
+## sample_2 0.3333333 0.3333333 0.3333333
+## 
+## , , s2
+## 
+##                  a         b         c
+## sample_1 0.3727891 0.2441238 0.3830872
+## sample_2 0.3269560 0.3388499 0.3341941
+```
+
+]
+.pull-right[
+
+
+😳
+
+No more matrix results. 3D array and we get all of the probabilities back this time. 
+
+
+
+]
+
+
+---
+
+# {glmnet} prediction summary
+
+
+.pull-left[
+
+Awesome: `glmnet` can return predictions across multiple sub-models for all possible values of `lambda`. 
+
+Not awesome: the return values differ and are internally inconsistent. 
+
+| Type of Prediction       | Returns a:                      |
+|--------------------------|---------------------------------|
+| numeric                  | numeric matrix                  |
+| class                    | _character_ matrix              |
+| probability (2 classes)  | numeric matrix (2nd level only) |
+| probability (3+ classes) | 3D numeric array (all levels)   |
+
+]
+.pull-right[
+
+Maybe a structure like this would work better:
+
+
+```
+## # A tibble: 6 x 4
+##       a     b     c lambda
+##   &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt;  &lt;dbl&gt;
+## 1 0.333 0.333 0.333   1   
+## 2 0.333 0.333 0.333   1   
+## 3 0.333 0.333 0.333   0.1 
+## 4 0.333 0.333 0.333   0.1 
+## 5 0.373 0.244 0.383   0.01
+## 6 0.327 0.339 0.334   0.01
+```
+]  
+  
+---
+
+# The user-interface and computational-interface. 
+
+Poor user API design often results from a sole focus on the computational aspects of the task. 
+
+For example:
+ 
+ - Matrix inputs only.
+
+ - Integers encodings for qualitative data.
+ 
+ - No object-oriented programming. 
+ 
+When creating model objects, the computational code that fits the model should be **decoupled** from the interface code to specify the model.
+
+This assumes that package authors are as skilled and up-to-date on user API design as they are at computations. 
+
+
+---
+
+# Easy user interfaces using {hardhat}
+
+
+.pull-left[
+`hardhat` is an R package for making high-quality modeling packages in R. 
+
+It uses templates to create user-interfaces so that package authors can "drop-in" their computational parts and get the user interface for free.
+
+
+
+```r
+library(hardhat)
+
+create_modeling_package(
+  path = "new.package",
+  model = "maxnet"
+)
+```
+
+]
+.pull-right[
+.font70[
+
+```
+&gt; library(hardhat)
+&gt; 
+&gt; create_modeling_package(
++   path = "new.package",
++   model = "maxnet"
++ )
+✔ Creating 'new.package/'
+✔ Setting active project to '/Users/max/tmp/new.package'
+✔ Creating 'R/'
+✔ Writing 'DESCRIPTION'
+Package: new.package
+Title: What the Package Does (One Line, Title Case)
+Version: 0.0.0.9000
+Authors@R (parsed):
+    * First Last &lt;first.last@example.com&gt; [aut, cre] (&lt;https://orcid.org/YOUR-ORCID-ID&gt;)
+Description: What the package does (one paragraph).
+License: What license it uses
+Encoding: UTF-8
+LazyData: true
+✔ Writing 'NAMESPACE'
+✔ Writing 'new.Rproj'
+✔ Adding '.Rproj.user' to '.gitignore'
+✔ Adding '^new\\.Rproj$', '^\\.Rproj\\.user$' to '.Rbuildignore'
+✔ Setting active project to '&lt;no active project&gt;'
+✔ Setting active project to '/Users/max/tmp/new.package'
+
+ℹ Adding required packages to the DESCRIPTION
+✔ Adding 'hardhat' to Imports field in DESCRIPTION
+● Refer to functions with `hardhat::fun()`
+✔ Adding 'rlang' to Imports field in DESCRIPTION
+● Refer to functions with `rlang::fun()`
+✔ Adding 'stats' to Imports field in DESCRIPTION
+● Refer to functions with `stats::fun()`
+:
+:
+```
+]
+
+]
+
+
+---
+
+# The role of technology
+
+Technology options: S4, R6, non-standard evaluation (NSE), ...
+
+Our goal is to make the **R code interface easy to use**. 
+
+We do utilize some of these technologies but only when it fits this goal. 
+
+ - Keep the interface _R-like_ and _simple_. 
+ 
+For example, `ggplot2`, `recipes` and other tidyverse packages delay the evaluation of objects. 
+
+We tend to use double-dispatch, meta-programming techniques (e.g. capturing expressions, quasi-quotation, traversing the abstract-syntax trees), and other complexities... 
+
+... but the user is only exposed to:
+
+.pull-left[
+
+```r
+iris %&gt;% 
+   group_by(Species) %&gt;% 
+   summarise_if(is.numeric, mean)
+```
+]
+.pull-right[
+
+.font120[
+
+Do not force complexity on users!
+
+]
+
+]
+
+
+
+---
+layout: false
+class: inverse, middle, center
+
+# tidymodels
+
+
+
+---
+
+# {tidymodels} organization
+ 
+.pull-left[
+The `tidymodels` packages bring tidyverse principles to modeling and data analysis. 
+
+It contains a set of modular, inter-connected packages based on a common set of [design principles for modeling](https://tidymodels.github.io/model-implementation-principles/). 
+
+]
+.pull-right[
+
+There's also a meta-package for installing and loading the core set:
+
+.font70[
+
+
+```r
+library(tidymodels)
+```
+
+```
+## Registered S3 method overwritten by 'xts':
+##   method     from
+##   as.zoo.xts zoo
+```
+
+```
+## ── Attaching packages ────────────────────────────── tidymodels 0.0.2 ──
+```
+
+```
+## ✔ broom     0.5.1          ✔ purrr     0.3.3     
+## ✔ dials     0.0.3.9002     ✔ recipes   0.1.7.9001
+## ✔ dplyr     0.8.3          ✔ rsample   0.0.5     
+## ✔ ggplot2   3.2.1          ✔ tibble    2.1.3     
+## ✔ infer     0.4.0          ✔ yardstick 0.0.4     
+## ✔ parsnip   0.0.4
+```
+
+```
+## ── Conflicts ───────────────────────────────── tidymodels_conflicts() ──
+## ✖ purrr::accumulate() masks foreach::accumulate()
+## ✖ purrr::discard()    masks scales::discard()
+## ✖ dplyr::filter()     masks stats::filter()
+## ✖ dplyr::lag()        masks stats::lag()
+## ✖ ggplot2::margin()   masks dials::margin()
+## ✖ dials::offset()     masks stats::offset()
+## ✖ recipes::step()     masks stats::step()
+## ✖ purrr::when()       masks foreach::when()
+```
+
+] 
+ 
+]
+ 
+---
+
+# Recipes
+
+.pull-left[
+Recipes extends data pre-processing techniques beyond the capabilities of `model.matrix()`. 
+
+It enables the user to write a pipeline of data manipulations that can be trained and executed on new data.
+
+.font120[
+
+```
+  recipe   --&gt;     prep    --&gt; bake/juice
+
+  (define) --&gt; (calculate) --&gt;  (apply)
+```
+
+]
+
+]
+.pull-right[
+
+```r
+library(AmesHousing)
+ames &lt;- make_ames()
+
+ames_rec &lt;-
+  recipe(Sale_Price ~ ., data = ames_train) %&gt;%
+  step_log(Sale_Price, base = 10) %&gt;%
+  step_YeoJohnson(Lot_Area, Gr_Liv_Area) %&gt;%
+  step_other(Neighborhood, threshold = .1)  %&gt;%
+  step_dummy(all_nominal()) %&gt;%
+  step_zv(all_predictors()) %&gt;%
+  step_ns(Longitude, Latitude)
+
+ames_rec &lt;- prep(ames_rec)
+
+# Get processed training set
+juice(ames_rec)
+
+# New data:
+bake(ames_rec, new_data)
+```
+]
+
+---
+
+# In a world with no pipes
+
+
+```r
+ames_rec &lt;- recipe(Sale_Price ~ ., data = ames_train)
+ames_rec &lt;- step_log(ames_rec, Sale_Price, base = 10)
+ames_rec &lt;- step_YeoJohnson(ames_rec, Lot_Area, Gr_Liv_Area)
+ames_rec &lt;- step_other(ames_rec, Neighborhood, threshold = .1)
+ames_rec &lt;- step_dummy(ames_rec, all_nominal())
+ames_rec &lt;- step_zv(ames_rec, all_predictors())
+ames_rec &lt;- step_ns(ames_rec, Longitude, Latitude)
+```
+
+
+
+---
+
+# Modeling with {parsnip}
+
+.pull-left[
+`parsnip` is a unified interface for modeling in the tidyverse. 
+
+Like a recipe, we _specify_ the model before any estimation. 
+
+The model _engine_ declares how we should estimate parameters.
+
+For example, it we know that we need a slope/intercept model:
+
+
+```r
+mod &lt;- linear_reg()
+```
+]
+.pull-right[
+
+```r
+# choose an engine
+mod &lt;- mod %&gt;% set_engine("lm")
+
+# or regularize the model:
+mod &lt;- mod %&gt;% set_engine("glmnet")
+
+# or use Bayesian estimation
+mod &lt;- mod %&gt;% set_engine("stan")
+
+# or tensorflow
+mod &lt;- mod %&gt;% set_engine("tensorflow")
+
+# ------------------------------------------------------
+
+# at any point, we can fit the model:
+mod %&gt;% fit(mpg ~ ., data = mtcars)
+
+# or
+mod %&gt;% fit_xy(x = mtcars[, -1], y = mtcars$mpg)
+```
+]
+
+---
+
+# Modeling text data with {textrecipes}
+
+
+```r
+text_preproc &lt;-
+  recipe(score ~ product + review, data = training_data) %&gt;%
+  # Do not use the product ID as a predictor
+  update_role(product, new_role = "id") %&gt;%
+  # Compute the initial features such as # words, # hashtags, 
+  # sentiment scores, etc
+  step_textfeature(review) %&gt;%
+  # Split the text by word
+  step_tokenize(review)  %&gt;%
+  # Remove common words like "and"
+  step_stopwords(review) %&gt;%
+  # Convert words to a common stem
+  step_stem(review) %&gt;%
+  # Create indicators for words
+  step_texthash(review, num_terms = 1024)
+```
+
+---
+
+# Tuning parameters
+
+
+```r
+text_preproc &lt;-
+  recipe(score ~ product + review, data = training_data) %&gt;%
+  # Do not use the product ID as a predictor
+  update_role(product, new_role = "id") %&gt;%
+  # Compute the initial features such as # words, # hashtags, 
+  # sentiment scores, etc
+  step_textfeature(review) %&gt;%
+  # Split the text by word
+  step_tokenize(review)  %&gt;%
+  # Remove common words like "and"
+  step_stopwords(review) %&gt;%
+  # Convert words to a common stem
+  step_stem(review) %&gt;%
+  # Create indicators for words
+* step_texthash(review, num_terms = 1024)
+```
+
+How do we know how many features to use? Should we optimize this? 
+
+
+---
+
+# Tuning parameters
+
+
+```r
+text_preproc &lt;-
+  recipe(score ~ product + review, data = training_data) %&gt;%
+  # Do not use the product ID as a predictor
+  update_role(product, new_role = "id") %&gt;%
+  # Compute the initial features such as # words, # hashtags, 
+  # sentiment scores, etc
+  step_textfeature(review) %&gt;%
+  # Split the text by word
+  step_tokenize(review)  %&gt;%
+  # Remove common words like "and"
+  step_stopwords(review) %&gt;%
+  # Convert words to a common stem
+  step_stem(review) %&gt;%
+  # Create indicators for words
+* step_texthash(review, num_terms = tune())
+```
+
+
+---
+
+# Tuning parameters with the {tune} package
+
+
+```r
+lr_mod &lt;- 
+*  logistic_reg(penalty = tune(), mixture = tune()) %&gt;%
+   set_engine("glmnet")
+
+tune_grid(text_preproc, lr_mod, resamples)
+
+# or 
+
+tune_bayes(text_preproc, lr_mod, resamples, iter = 100)
+```
+
+You can define your own grid, the grid size, or let the `tune_*()` functions use a set of reasonable defaults.
+
+Parallel processing is fairly easy; just load a `foreach` parallel backend such as 
+
+
+```r
+library(doParallel)
+cl &lt;- makePSOCKcluster()
+registerDoParallel(cl)
+```
+
+
+---
+
+# Errors and warnings 
+
+With traditional approaches, you get warnings at the end of the function call. This is bad when resampling. 
+
+`tune` handles these issues and reports issues with a model identifier as they happen. 
+
+&lt;img src="images/logging.png" width="80%" style="display: block; margin: auto;" /&gt;
+
+---
+
+# Evaluating hypotheses via {infer}
+
+
+
+.pull-left[
+
+```r
+library(infer)
+
+set.seed(3555)
+perms &lt;-
+  ames %&gt;%
+  specify(Sale_Price ~ Pool_Area) %&gt;%
+  hypothesize(null = "independence") %&gt;%
+  generate(reps = 5000, type = "permute") %&gt;%
+  calculate(stat = "correlation", method = "spearman")
+
+observed &lt;- 
+   ames %&gt;%
+   specify(Sale_Price ~ Pool_Area) %&gt;%
+   calculate(stat = "correlation", method = "spearman")  
+```
+
+]
+.pull-right[
+
+
+```r
+visualize(perms, bins = 50) +
+   shade_pvalue(observed, direction = "two_sided")
+```
+
+&lt;img src="Kuhn_files/figure-html/infer-res-1.svg" style="display: block; margin: auto;" /&gt;
+
+]
+
+---
+
+# Summary
+
+
+.pull-left[
+&lt;img src="images/CurbCut.jpg" width="1040" style="display: block; margin: auto;" /&gt;
+]
+.pull-right[
+R and the S language have been around for a long time. 
+
+We should be at the point where packages are a joy to use and are able to 
+
+&gt; "to turn ideas into software, quickly and faithfully"
+
+but without the headaches! 
+
+]
+
+&lt;br&gt;
+
+The `tidymodels` packages aim to make things better for _users_.
+
+The `hardhat` package is designed to help developers make better packages.
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"ratio": "16:9",
+"highlightLanguage": "R",
+"highlightStyle": "github",
+"highlightLines": true,
+"countIncrementalSlides": false
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();</script>
+
+<script>
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>

@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+  <head>
+    <title>Designing R Modeling Packages (https://github.com/topepo/XIjuR-2019)</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Max Kuhn (RStudio)" />
+    <link rel="stylesheet" href="mtheme_max.css" type="text/css" />
+    <link rel="stylesheet" href="fonts_mtheme_max.css" type="text/css" />
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# Designing R Modeling Packages (<a href="https://github.com/topepo/XIjuR-2019" class="uri">https://github.com/topepo/XIjuR-2019</a>)
+### Max Kuhn (RStudio)
+
+---
+
+
+
+
+
+
+
+
+# The user-interface and computational-interface. 
+
+Poor user API design often results from a sole focus on the computational aspects of the task. 
+
+For example:
+ 
+ - Matrix inputs only.
+
+ - Integers encodings for qualitative data.
+ 
+ - No object-oriented programming. 
+ 
+When creating model objects, the computational code that fits the model should be **decoupled** from the interface code to specify the model.
+
+This assumes that package authors are as skilled and up-to-date on user API design as they are at computations. 
+
+
+---
+
+# Easy user interfaces using {hardhat}
+
+`hardhat` is an R package for making high-quality modeling packages in R. It follows our [`https://tidymodels.github.io/model-implementation-principles/`](https://tidymodels.github.io/model-implementation-principles/).
+
+It uses templates to create user-interfaces so that package authors can "drop-in" their computational parts and get the user interface for free.
+
+
+.font120[
+
+
+```r
+if (!require(devtools)) {
+  install.packages("devtools", repos = "http://cran.r-project.org")
+}
+
+devtools::install_github("tidymodels/hardhat")
+
+# optional:
+
+install.packages("rsample", repos = "http://cran.r-project.org")
+```
+
+]
+
+
+
+---
+
+# A really bad model
+
+As a simple example, we'll use a model that uses minimal information to make classification predictions. 
+
+This is actually useful as the worst-possible model when benchmarking. 
+
+.pull-left[
+
+```r
+estimate_mal_modelo &lt;- function(y, x = NULL) {
+  # use only complete results
+  y &lt;- y[!is.na(y)]
+  # get sample frequencies and rates
+  xtab &lt;- table(y)
+  n &lt;- length(y)
+  rates &lt;- xtab/n
+  # pick a level to use for a hard class prediction
+  default_index &lt;- which.max(rates)
+  default_class &lt;- names(rates)[default_index]
+  list(rates = rates, pred = default_class)
+}
+```
+]
+.pull-right[
+
+```r
+assign_class &lt;- function(object, newdata) {
+  res &lt;- rep(object$pred, nrow(newdata))
+  res &lt;- factor(res, levels = names(object$rates))
+  tibble::tibble(.pred_class = res)
+}
+
+assign_probs &lt;- function(object, newdata) {
+  n &lt;- nrow(newdata)
+  res &lt;- rep(object$rates, n)
+  res &lt;- matrix(res, nrow = n, byrow = TRUE)
+  colnames(res) &lt;- paste0(".pred_", names(object$rate))
+  res &lt;- tibble::as_tibble(res)
+  res
+}
+```
+]
+
+---
+
+# Step 1: Create the package template
+
+
+```r
+library(hardhat)
+create_modeling_package(
+  path = "~/tmp/mal",
+  model = "mal_modelo"
+)
+```
+
+
+---
+
+# WHAT JUST HAPPENED? 😨
+
+We created an R package template that has function and method code pre-populated. 
+There's not enough time here to go through the details, but _methods_ for our modeling function were created so that you can fit it using
+
+.font120[
+
+
+```r
+# user-facing interfaces: 
+
+mal_modelo(x, y)
+
+# or 
+mal_modelo(formula, data)
+
+# or 
+mal_modelo(recipe, data)
+```
+
+]
+
+where `x` can be a matrix or data frame and `y` can be a vector or data frame. 
+
+Note: The formula has a nice interface for multivariate methods (`y2 + y1 ~ x1 + x2`)
+
+
+---
+
+# How does this work? 
+
+We have a few user-facing interfaces but one computational interface (via `estimate_mal_modelo()`).
+
+We need a way to _bridge_ the gap between multiple inputs to our estimation function. 
+
+Each of these user interfaces outputs an object with a common structure called a _blueprint_. An example:
+
+.font120[
+
+
+```r
+mal_modelo.formula &lt;- function(formula, data, ...) {
+  processed &lt;- hardhat::mold(formula, data)
+  mal_modelo_bridge(processed, ...)
+}
+```
+
+]
+
+`processed` always has the same information in each interface so you don't have to worry about how each `mal_modelo` method works. 
+
+What is `mal_modelo_bridge()`? 
+
+
+---
+
+# Step 2: Edit the bridge template
+
+The package automatically has:
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes[[1]]
+
+  fit &lt;- mal_modelo_impl(predictors, outcome)
+
+  new_mal_modelo(
+    coefs = fit$coefs,
+    blueprint = processed$blueprint
+  )
+}
+```
+
+We will change this to work with our modeling function. 
+
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+* predictors &lt;- processed$predictors
+* outcome &lt;- processed$outcomes
+
+  fit &lt;- mal_modelo_impl(predictors, outcome)
+
+  new_mal_modelo(
+    coefs = fit$coefs,
+    blueprint = processed$blueprint
+  )
+}
+```
+
+These don't need to change. They give you the data back as a data frame (for `predictors`) and a data frame for `outcome`. 
+
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes 
+
+* hardhat::validate_outcomes_are_factors(outcome)
+* hardhat::validate_outcomes_is_univariate(outcome)
+  
+  fit &lt;- mal_modelo_impl(predictors, outcome)
+
+  new_mal_modelo(
+    coefs = fit$coefs,
+    blueprint = processed$blueprint
+  )
+}
+```
+
+_Optionally_, we can also add some build-in validation functions to give helpful error messages. 
+
+This will depend on your type of model. 
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes 
+
+  hardhat::validate_outcomes_are_factors(outcome) 
+  hardhat::validate_outcomes_is_univariate(outcome) 
+  
+* # make outcome a vector
+* outcome &lt;- outcome[[1]]
+  
+  fit &lt;- mal_modelo_impl(predictors, outcome)
+
+  new_mal_modelo(
+    coefs = fit$coefs,
+    blueprint = processed$blueprint
+  )
+}
+```
+
+We can also reformat the data into a structure that our computational code expects (like `as.matrix(x)` etc.)
+
+Our function expects the outcome to be a vector, so we take the first (and only) column. 
+
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes 
+
+  hardhat::validate_outcomes_are_factors(outcome) 
+  hardhat::validate_outcomes_is_univariate(outcome) 
+  
+  # make outcome a vector 
+  outcome &lt;- outcome[[1]] 
+
+* fit &lt;- mal_modelo_impl(predictors, outcome)
+
+  new_mal_modelo(
+    coefs = fit$coefs,
+    blueprint = processed$blueprint
+  )
+}
+```
+
+Here, we substitute our estimation function:
+
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes 
+
+  hardhat::validate_outcomes_are_factors(outcome) 
+  hardhat::validate_outcomes_is_univariate(outcome) 
+  
+  # make outcome a vector 
+  outcome &lt;- outcome[[1]] 
+
+* fit &lt;- estimate_mal_modelo(y = outcome, x = predictors)
+
+  new_mal_modelo(
+    coefs = fit$coefs,
+    blueprint = processed$blueprint
+  )
+}
+```
+
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes 
+
+  hardhat::validate_outcomes_are_factors(outcome) 
+  hardhat::validate_outcomes_is_univariate(outcome) 
+  
+  # make outcome a vector 
+  outcome &lt;- outcome[[1]] 
+
+  fit &lt;- estimate_mal_modelo(y = outcome, x = predictors)  
+
+* new_mal_modelo(
+*   coefs = fit$coefs,
+*   blueprint = processed$blueprint
+  )
+}
+```
+
+Here we need to change the _constructor_ function that creates a standard format for new objects. It formalizes an S3 class for the model. 
+
+We'll need to save our model output here. `fit$coefs` is just a placeholder. 
+
+
+---
+
+# Step 2: Edit the bridge template
+
+
+
+```r
+mal_modelo_bridge &lt;- function(processed, ...) {
+  predictors &lt;- processed$predictors
+  outcome &lt;- processed$outcomes 
+
+  hardhat::validate_outcomes_are_factors(outcome) 
+  hardhat::validate_outcomes_is_univariate(outcome) 
+  
+  # make outcome a vector 
+  outcome &lt;- outcome[[1]] 
+
+  fit &lt;- estimate_mal_modelo(y = outcome, x = predictors)  
+
+  new_mal_modelo(                      
+*   pred = fit$pred,
+*   rates = fit$rates,
+    blueprint = processed$blueprint    
+  )
+}
+```
+
+`fit` has the results that we'll need for prediction. 
+
+---
+
+# Step 3: Edit the constructor
+
+
+```r
+*new_mal_modelo &lt;- function(coefs, blueprint) {
+  hardhat::new_model(
+*   coefs = coefs,
+    blueprint = blueprint,
+    class = "mal_modelo"
+  )
+}
+```
+
+
+In `constructor.R`. 
+
+We need to change this to match the structure we used in the bridge function. 
+
+
+---
+
+# Step 3: Edit the constructor
+
+
+```r
+*new_mal_modelo &lt;- function(pred, rates, blueprint) {
+  hardhat::new_model(
+*   pred = pred,
+*   rates = rates,
+    blueprint = blueprint,
+    class = "mal_modelo"
+  ) 
+}
+```
+
+
+We can also add some validation code for `pred` and `rates` here too. 
+
+---
+
+# Step 4: Add fit function to package
+
+We just copy `estimate_mal_modelo()` to the package and put it in the `fit-implementation.R` file. 
+ 
+
+---
+
+# Checkpoint
+
+
+Let's see if this worked by installing the package. 
+
+First we generate the document files and then install. 
+
+
+```r
+data(attrition, package = "rsample")
+library(mal)
+test &lt;- mal_modelo(Attrition ~ ., data = attrition)
+test
+
+mal_modelo(Age ~ ., data = attrition)
+```
+
+---
+
+# Step 5: Make the prediction functions
+
+
+```r
+predict_mal_modelo_bridge &lt;- function(type, model, predictors) {
+  predictors &lt;- as.matrix(predictors)
+
+  predict_function &lt;- get_predict_function(type)
+  predictions &lt;- predict_function(model, predictors)
+
+  hardhat::validate_prediction_size(predictions, predictors)
+
+  predictions
+}
+
+get_predict_function &lt;- function(type) {
+  switch(
+    type,
+    numeric = predict_mal_modelo_numeric
+  )
+}
+```
+
+This is the template. We'll modify this too.
+
+---
+
+# Step 5: Make the prediction functions
+
+
+```r
+predict_mal_modelo_bridge &lt;- function(type, model, predictors) {
+  predictors &lt;- as.matrix(predictors)
+
+  predict_function &lt;- get_predict_function(type)
+  predictions &lt;- predict_function(model, predictors)
+
+  hardhat::validate_prediction_size(predictions, predictors)
+
+  predictions
+}
+
+get_predict_function &lt;- function(type) {
+  switch(
+    type,
+*   class = assign_class,
+*   probs = assign_probs
+  )
+}
+```
+
+
+---
+
+# Step 5: Make the prediction functions
+
+
+```r
+predict_mal_modelo_bridge &lt;- function(type, model, predictors) {
+* predictors &lt;- as.matrix(predictors)
+
+  predict_function &lt;- get_predict_function(type)
+  predictions &lt;- predict_function(model, predictors)
+
+  hardhat::validate_prediction_size(predictions, predictors)
+
+  predictions
+}
+
+get_predict_function &lt;- function(type) {
+  switch(
+    type,
+    class = assign_class, 
+    probs = assign_probs 
+  )
+}
+```
+
+We don't need this default. 
+
+---
+
+# Step 5: Make the prediction functions
+
+
+```r
+predict_mal_modelo_bridge &lt;- function(type, model, predictors) {
+*  
+
+  predict_function &lt;- get_predict_function(type)
+  predictions &lt;- predict_function(model, predictors)
+
+  hardhat::validate_prediction_size(predictions, predictors)
+
+  predictions
+}
+
+get_predict_function &lt;- function(type) {
+  switch(
+    type,
+    class = assign_class, 
+    prob = assign_probs 
+  )
+}
+```
+
+Done! We'll update the code in `predict-bridge.R`
+
+---
+
+# Step 6: Declare the types of predictions
+
+
+In the file `predict-interface.R`, we need to make some modifications for classification models: 
+
+
+```r
+*predict.mal_modelo &lt;- function(object, new_data, type = "numeric", ...) {
+  forged &lt;- hardhat::forge(new_data, object$blueprint)
+  rlang::arg_match(type, valid_predict_types())
+  predict_mal_modelo_bridge(type, object, forged$predictors)
+}
+
+valid_predict_types &lt;- function() {
+* c("numeric")
+}
+```
+
+
+
+---
+
+# Step 6: Declare the types of predictions
+
+Our possible values are `class` and `probs`:
+
+
+```r
+*predict.mal_modelo &lt;- function(object, new_data, type = "class", ...) {
+  forged &lt;- hardhat::forge(new_data, object$blueprint)
+  rlang::arg_match(type, valid_predict_types())
+  predict_mal_modelo_bridge(type, object, forged$predictors)
+}
+
+valid_predict_types &lt;- function() {
+* c("class", "prob")
+}
+```
+
+
+---
+
+# Step 7: Copy your prediction functions to the package
+
+They go into the file `predict-implementation.R`. 
+
+
+---
+
+# Step 8: Add package dependencies
+
+For `assign_class()` and `assign_probs()`, we need the `tibble` package. 
+
+We'll need to update the DESCRIPTION file to do that using
+
+```
+&gt; usethis::use_package("tibble")
+✔ Setting active project to '/Users/max/tmp/mal'
+✔ Adding 'tibble' to Imports field in DESCRIPTION
+● Refer to functions with `tibble::fun()`
+```
+
+---
+
+# Checkpoint
+
+
+
+```r
+data(attrition, package = "rsample")
+
+library(mal)
+test &lt;- mal_modelo(Attrition ~ ., data = attrition)
+test
+
+predict(test, attrition[1:2, ], type = "prob")
+
+predict(test, attrition[1:2, ], type = "class")
+```
+
+---
+
+# Step 9: Polish!
+
+* Update the documentation files to describe your methods
+
+* Add methods like `print()`, `summary()`, `tidy()`, etc. 
+
+* Maybe add a package vignette, use travis for testing, unit tests, etc. 
+
+The [R packages book](http://r-pkgs.had.co.nz/) is a great plac to start to learn about these aspects of packages.
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"ratio": "16:9",
+"highlightLanguage": "R",
+"highlightStyle": "github",
+"highlightLines": true,
+"countIncrementalSlides": false
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();</script>
+
+<script>
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
